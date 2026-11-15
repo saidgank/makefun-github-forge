@@ -280,6 +280,9 @@ export class Store {
   private clockTick = 0;
   /** The viewer's login, learned from the first owner name that addresses a viewer repo. */
   viewerLogin = '';
+  /** Bumped before every non-GET request is handled: any mutation anywhere invalidates
+   *  response caches keyed on it, and a pure-read stretch keeps them hot. */
+  version = 0;
 
   /** A deterministic timestamp: a logical clock starting 2026-01-01, one second per call. */
   nowIso(): string {

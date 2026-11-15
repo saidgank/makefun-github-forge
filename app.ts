@@ -73,6 +73,7 @@ export function createApp(): Server {
         const url = new URL(req.url ?? '/', 'http://entry');
         const path = url.pathname;
         const method = req.method ?? 'GET';
+        if (method !== 'GET') store.version += 1;
 
         if (method === 'GET' && path === '/healthz') {
           sendJson(res, 200, { ok: true });

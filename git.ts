@@ -58,8 +58,9 @@ export class PktReader {
 /** Inflate one zlib stream starting at `offset`; returns the data and the offset just past it. */
 function inflateAt(data: Buffer, offset: number, expectedSize: number): { out: Buffer; next: number } {
   // The stream's end is the smallest prefix length that inflates to exactly the declared size
-  // with its Adler-32 check passing; find an upper bound by doubling, then binary-search it.
-  let hi = Math.min(data.length, offset + 64);
+  // with its Adler-32 check passing; bracket it starting near the declared size (a pack entry
+  // rarely compresses far from its raw length), widening by doubling, then binary-search it.
+  let hi = Math.min(data.length, offset + Math.max(64, Math.ceil(expectedSize * 1.05) + 32));
   let lo = offset;
   for (;;) {
     try {
@@ -230,7 +231,7 @@ export function buildPack(entries: readonly PackEntry[]): Buffer {
       headerBytes.push(size > 0 ? byte | 0x80 : byte);
     }
     parts.push(Buffer.from(headerBytes));
-    parts.push(deflateSync(entry.data));
+    parts.push(deflateSync(entry.data, { level: 1 }));
   }
   const body = Buffer.concat(parts);
   const trailer = Buffer.from(sha1Hex(body), 'hex');

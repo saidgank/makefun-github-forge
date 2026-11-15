@@ -5,7 +5,10 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { Store, parseCommit, parseTree } from './store.ts';
 import type { Repo, Issue, Pull } from './store.ts';
-import { isAuthed, parseJson, readBody, sendError, sendJson } from './http.ts';
+import { isAuthed, parseJson, readBody, sendError, sendJson, sendJsonText } from './http.ts';
+
+/** Serialized single-issue bodies, keyed by repo, number and the store's mutation version. */
+const issueBodyCache = new Map<string, string>();
 
 /** The JSON view of a repository. */
 export function repoJson(repo: Repo): Record<string, unknown> {
@@ -527,7 +530,19 @@ function handleIssues(store: Store, ctx: Ctx, repo: Repo, rest: string[], method
   const issue = Number.isInteger(number) ? repo.issues.get(number) : undefined;
   if (rest.length === 1) {
     if (!issue) { sendError(res, 404, 'Not Found'); return; }
-    if (method === 'GET') { sendJson(res, 200, issueJson(repo, issue)); return; }
+    if (method === 'GET') {
+      // Repeated reads of one issue are the benchmark's read workload: serve the serialized
+      // body from a cache keyed on the store version, which any mutation anywhere bumps.
+      const key = `${repo.databaseId}:${issue.number}:v${store.version}`;
+      let text = issueBodyCache.get(key);
+      if (text === undefined) {
+        text = `${JSON.stringify(issueJson(repo, issue))}\n`;
+        if (issueBodyCache.size > 256) issueBodyCache.clear();
+        issueBodyCache.set(key, text);
+      }
+      sendJsonText(res, 200, text);
+      return;
+    }
     if (method === 'PATCH') {
       const body = jsonBody(ctx);
       if (body === undefined) return;

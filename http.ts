@@ -25,6 +25,16 @@ export function sendJson(res: ServerResponse, status: number, body: unknown, hea
   res.end(text);
 }
 
+/** Answer with a pre-serialized JSON body (same headers as sendJson). */
+export function sendJsonText(res: ServerResponse, status: number, text: string): void {
+  res.writeHead(status, {
+    'content-type': JSON_TYPE,
+    'content-length': Buffer.byteLength(text),
+    'x-github-request-id': nextRequestId(),
+  });
+  res.end(text);
+}
+
 /** Answer with GitHub's error shape: {"message": ...}. */
 export function sendError(res: ServerResponse, status: number, message: string): void {
   sendJson(res, status, { message });
