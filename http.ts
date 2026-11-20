@@ -35,6 +35,16 @@ export function sendJsonText(res: ServerResponse, status: number, text: string):
   res.end(text);
 }
 
+/** Answer with a pre-serialized JSON body held as bytes: no re-encoding, length is the buffer's. */
+export function sendJsonBuffer(res: ServerResponse, status: number, body: Buffer): void {
+  res.writeHead(status, {
+    'content-type': JSON_TYPE,
+    'content-length': body.length,
+    'x-github-request-id': nextRequestId(),
+  });
+  res.end(body);
+}
+
 /** Answer with GitHub's error shape: {"message": ...}. */
 export function sendError(res: ServerResponse, status: number, message: string): void {
   sendJson(res, status, { message });
@@ -60,9 +70,14 @@ export function parseJson(buffer: Buffer): { ok: true; value: unknown } | { ok: 
   }
 }
 
-/** The bearer token the suite presents, from the environment; '' when unset (local runs). */
+let tokenCache: string | undefined;
+
+/** The bearer token the suite presents, from the environment; '' when unset (local runs).
+ *  Read once: the environment of a running forge never changes, and process.env access
+ *  is slow enough to show up on the timed request loops. */
 export function expectedToken(): string {
-  return process.env.MAKEFUN_SHOP_TOKEN ?? '';
+  if (tokenCache === undefined) tokenCache = process.env.MAKEFUN_SHOP_TOKEN ?? '';
+  return tokenCache;
 }
 
 /** Is this request authenticated? When no token is configured, everything is (local runs). */

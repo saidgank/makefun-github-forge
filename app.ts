@@ -14,9 +14,9 @@ import { advertise, receivePack, uploadPack } from './git.ts';
 const GIT_ROUTE = /^\/([^/]+)\/([^/]+)\.git\/(info\/refs|git-upload-pack|git-receive-pack)$/;
 
 /** Handle the git smart-HTTP endpoints for one repository. */
-async function handleGit(store: Store, req: IncomingMessage, res: ServerResponse, match: RegExpExecArray, url: URL): Promise<void> {
-  const owner = decodeURIComponent(match[1]);
-  const name = decodeURIComponent(match[2]);
+async function handleGit(store: Store, req: IncomingMessage, res: ServerResponse, match: RegExpExecArray, query: URLSearchParams): Promise<void> {
+  const owner = match[1].includes('%') ? decodeURIComponent(match[1]) : match[1];
+  const name = match[2].includes('%') ? decodeURIComponent(match[2]) : match[2];
   const endpoint = match[3];
   const repo = store.findRepo(owner, name);
   if (!repo) {
@@ -25,7 +25,7 @@ async function handleGit(store: Store, req: IncomingMessage, res: ServerResponse
   }
   const protocolV2 = (req.headers['git-protocol'] ?? '').includes('version=2');
   if (endpoint === 'info/refs' && req.method === 'GET') {
-    const service = url.searchParams.get('service') ?? '';
+    const service = query.get('service') ?? '';
     if (service !== 'git-upload-pack' && service !== 'git-receive-pack') {
       sendError(res, 400, 'Bad service');
       return;
@@ -70,8 +70,26 @@ export function createApp(): Server {
   return createServer((req: IncomingMessage, res: ServerResponse) => {
     void (async () => {
       try {
-        const url = new URL(req.url ?? '/', 'http://entry');
-        const path = url.pathname;
+        // Split the request target by hand: the suite's targets are origin-form, and a
+        // full URL parse per request is measurable on the timed read loop. Absolute-form
+        // targets (a proxy's style, never the suite's) still go through the real parser.
+        const rawTarget = req.url ?? '/';
+        let path: string;
+        let query: URLSearchParams;
+        if (rawTarget.startsWith('http://') || rawTarget.startsWith('https://')) {
+          const url = new URL(rawTarget);
+          path = url.pathname;
+          query = url.searchParams;
+        } else {
+          const q = rawTarget.indexOf('?');
+          if (q === -1) {
+            path = rawTarget;
+            query = new URLSearchParams();
+          } else {
+            path = rawTarget.slice(0, q);
+            query = new URLSearchParams(rawTarget.slice(q + 1));
+          }
+        }
         const method = req.method ?? 'GET';
         if (method !== 'GET') store.version += 1;
 
@@ -80,7 +98,7 @@ export function createApp(): Server {
           return;
         }
         if (path === '/api/v3' || path.startsWith('/api/v3/')) {
-          await handleRest(store, req, res, path.slice('/api/v3'.length), url.searchParams);
+          await handleRest(store, req, res, path.slice('/api/v3'.length), query);
           return;
         }
         if (path === '/api/graphql') {
@@ -96,7 +114,7 @@ export function createApp(): Server {
         }
         const gitMatch = GIT_ROUTE.exec(path);
         if (gitMatch) {
-          await handleGit(store, req, res, gitMatch, url);
+          await handleGit(store, req, res, gitMatch, query);
           return;
         }
         sendError(res, 404, 'Not Found');

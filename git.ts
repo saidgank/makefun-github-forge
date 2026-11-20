@@ -57,6 +57,22 @@ export class PktReader {
 
 /** Inflate one zlib stream starting at `offset`; returns the data and the offset just past it. */
 function inflateAt(data: Buffer, offset: number, expectedSize: number): { out: Buffer; next: number } {
+  // Fast path: a pack entry's zlib stream is self-terminating, and when asked for `info`
+  // Node's zlib reports exactly how many input bytes the stream consumed — one inflate
+  // pins both the data and the end of the stream, where the bracketing search below needs
+  // a dozen. The search stays as the fallback for anything the fast path cannot validate
+  // (a truncated or corrupt stream), so failure behaviour is unchanged.
+  try {
+    const res = inflateSync(data.subarray(offset), { info: true }) as unknown as {
+      buffer: Buffer;
+      engine: { bytesRead: number };
+    };
+    if (res.buffer.length === expectedSize && res.engine.bytesRead > 0) {
+      return { out: res.buffer, next: offset + res.engine.bytesRead };
+    }
+  } catch {
+    // Fall through to the bracketing search.
+  }
   // The stream's end is the smallest prefix length that inflates to exactly the declared size
   // with its Adler-32 check passing; bracket it starting near the declared size (a pack entry
   // rarely compresses far from its raw length), widening by doubling, then binary-search it.

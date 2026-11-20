@@ -5,10 +5,13 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { Store, parseCommit, parseTree } from './store.ts';
 import type { Repo, Issue, Pull } from './store.ts';
-import { isAuthed, parseJson, readBody, sendError, sendJson, sendJsonText } from './http.ts';
+import { isAuthed, parseJson, readBody, sendError, sendJson, sendJsonBuffer } from './http.ts';
 
 /** Serialized single-issue bodies, keyed by repo, number and the store's mutation version. */
-const issueBodyCache = new Map<string, string>();
+const issueBodyCache = new Map<string, Buffer>();
+
+/** The shared empty body for requests that carry none. */
+const NO_BODY = Buffer.alloc(0);
 
 /** The JSON view of a repository. */
 export function repoJson(repo: Repo): Record<string, unknown> {
@@ -231,10 +234,19 @@ function str(value: unknown): string {
 
 /** Handle one /api/v3 request. `path` is the path after the /api/v3 prefix. */
 export async function handleRest(store: Store, req: IncomingMessage, res: ServerResponse, path: string, query: URLSearchParams): Promise<void> {
-  const rawBody = await readBody(req);
-  const segments = path.split('/').filter((s) => s !== '').map((s) => decodeURIComponent(s));
-  const ctx: Ctx = { store, req, res, segments, query, body: undefined, rawBody };
   const method = req.method ?? 'GET';
+  // A GET or HEAD whose headers promise no body is not read: waiting for the stream's end
+  // costs a turn of the event loop on every one of the benchmark's two thousand reads,
+  // and there is nothing in the stream to wait for. Anything that declares a body
+  // (a content-length or a chunked encoding) is read exactly as before.
+  const bodyless = (method === 'GET' || method === 'HEAD')
+    && req.headers['transfer-encoding'] === undefined
+    && (req.headers['content-length'] === undefined || req.headers['content-length'] === '0');
+  const rawBody = bodyless ? NO_BODY : await readBody(req);
+  // Most segments carry no escape at all; decodeURIComponent on a plain segment still
+  // allocates and scans, per request, on the timed loops.
+  const segments = path.split('/').filter((s) => s !== '').map((s) => (s.includes('%') ? decodeURIComponent(s) : s));
+  const ctx: Ctx = { store, req, res, segments, query, body: undefined, rawBody };
 
   if (!isAuthed(req)) {
     sendError(res, 401, 'Requires authentication');
@@ -533,14 +545,16 @@ function handleIssues(store: Store, ctx: Ctx, repo: Repo, rest: string[], method
     if (method === 'GET') {
       // Repeated reads of one issue are the benchmark's read workload: serve the serialized
       // body from a cache keyed on the store version, which any mutation anywhere bumps.
+      // The cached value is the response bytes themselves, so a hot read is a map lookup
+      // and one write.
       const key = `${repo.databaseId}:${issue.number}:v${store.version}`;
-      let text = issueBodyCache.get(key);
-      if (text === undefined) {
-        text = `${JSON.stringify(issueJson(repo, issue))}\n`;
+      let body = issueBodyCache.get(key);
+      if (body === undefined) {
+        body = Buffer.from(`${JSON.stringify(issueJson(repo, issue))}\n`, 'utf8');
         if (issueBodyCache.size > 256) issueBodyCache.clear();
-        issueBodyCache.set(key, text);
+        issueBodyCache.set(key, body);
       }
-      sendJsonText(res, 200, text);
+      sendJsonBuffer(res, 200, body);
       return;
     }
     if (method === 'PATCH') {
